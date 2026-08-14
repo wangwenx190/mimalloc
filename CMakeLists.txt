@@ -1,8 +1,20 @@
-cmake_minimum_required(VERSION 3.18)
-project(libmimalloc C)
+cmake_minimum_required(VERSION 4.0)
+
+project(libmimalloc
+    VERSION 3.5.2
+    DESCRIPTION "A compact general-purpose allocator with excellent performance"
+    LANGUAGES C
+)
+
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(MI_SECURE "OFF" CACHE STRING "Use security mitigations (like meta data guard pages, allocation randomization, double-free mitigation, and free-list corruption detection): OFF, ON, FULL. The FULL setting adds guard pages at the end of each mimalloc page (which may be expensive)")
 set_property(CACHE MI_SECURE PROPERTY STRINGS "OFF" "ON" "FULL")
@@ -46,7 +58,7 @@ option(MI_DEBUG_UBSAN       "Build with undefined-behavior sanitizer (needs clan
 option(MI_BUILD_SHARED      "Build shared library" ON)
 option(MI_BUILD_STATIC      "Build static library" ON)
 option(MI_BUILD_OBJECT      "Build object library" ON)
-option(MI_BUILD_TESTS       "Build test executables" ON)
+option(MI_INSTALL           "Enable installation for mimalloc" OFF)
 
 # OS specific
 option(MI_OSX_INTERPOSE     "Use interpose to override standard malloc on macOS" ON)
@@ -55,7 +67,6 @@ option(MI_WIN_REDIRECT      "Use redirection module ('mimalloc-redirect') on Win
 option(MI_LIBC_MUSL         "Enable this when linking with musl libc" OFF)
 
 # advanced
-option(MI_INSTALL_TOPLEVEL  "Install directly into $CMAKE_INSTALL_PREFIX instead of PREFIX/lib/mimalloc-version" OFF)
 option(MI_NO_THP            "Disable transparent huge pages support on Linux/Android for the mimalloc process only" OFF)
 option(MI_FREE_USE_PAGEMAP  "Always use the page map when free-ing a pointer -- enable only for systems that don't support large OS aligned allocations well." OFF)
 option(MI_PADDING           "Enable padding to detect heap block overflow (always on in DEBUG or SECURE mode, or with Valgrind/ASAN)" OFF)
@@ -102,7 +113,11 @@ set_property(CACHE MI_OPT_FREE_SMALL PROPERTY STRINGS "OFF" "ON" "DEFAULT")
 include(CheckLinkerFlag)    # requires cmake 3.18
 include(CheckIncludeFiles)
 include(GNUInstallDirs)
-include("cmake/mimalloc-config-version.cmake")
+
+set(mi_version_major ${PROJECT_VERSION_MAJOR})
+set(mi_version_minor ${PROJECT_VERSION_MINOR})
+set(mi_version_patch ${PROJECT_VERSION_PATCH})
+set(mi_version ${mi_version_major}.${mi_version_minor})
 
 set(mi_sources
     src/alloc.c
@@ -136,19 +151,6 @@ if(MI_EXTRA_CPPDEFS)
  set(mi_defines ${MI_EXTRA_CPPDEFS})
 else()
  set(mi_defines "")
-endif()
-
-# pass git revision as a define
-if(EXISTS "${CMAKE_SOURCE_DIR}/.git/index")
-  find_package(Git)
-  if(GIT_FOUND)
-    execute_process(COMMAND ${GIT_EXECUTABLE} "describe" OUTPUT_VARIABLE mi_git_describe RESULT_VARIABLE mi_git_res ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if(mi_git_res EQUAL "0")
-      list(APPEND mi_defines "MI_GIT_DESCRIBE=${mi_git_describe}")
-      # add to dependencies so we rebuild if the git head commit changes
-      set_property(GLOBAL APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/.git/index")
-    endif()
-  endif()
 endif()
 
 # case insensitive comparison
@@ -898,7 +900,7 @@ endif()
 # set language for source files now
 if(MI_USE_CXX)
   set_source_files_properties(${mi_sources} PROPERTIES LANGUAGE CXX )
-  set_source_files_properties(src/static.c test/test-api.c test/test-api-fill.c test/test-stress.c test/test-stress-heaps.c  test/test-stress-subprocs.c test/test-profile.c PROPERTIES LANGUAGE CXX )
+  set_source_files_properties(src/static.c PROPERTIES LANGUAGE CXX)
 endif()
 
 
@@ -906,20 +908,8 @@ endif()
 # Install and output names
 # -----------------------------------------------------------------------------
 
-# dynamic/shared library and symlinks always go to /usr/local/lib equivalent
-# we use ${CMAKE_INSTALL_BINDIR} and ${CMAKE_INSTALL_LIBDIR}.
-
-# static libraries and object files, includes, and cmake config files
-# are either installed at top level, or use versioned directories for side-by-side installation (default)
-if (MI_INSTALL_TOPLEVEL)
-  set(mi_install_objdir     "${CMAKE_INSTALL_LIBDIR}")
-  set(mi_install_incdir     "${CMAKE_INSTALL_INCLUDEDIR}")
-  set(mi_install_cmakedir   "${CMAKE_INSTALL_LIBDIR}/cmake/mimalloc")
-else()
-  set(mi_install_objdir     "${CMAKE_INSTALL_LIBDIR}/mimalloc-${mi_version}")       # for static library and object files
-  set(mi_install_incdir     "${CMAKE_INSTALL_INCLUDEDIR}/mimalloc-${mi_version}")   # for includes
-  set(mi_install_cmakedir   "${CMAKE_INSTALL_LIBDIR}/cmake/mimalloc-${mi_version}") # for cmake package info
-endif()
+set(mi_install_objdir "${CMAKE_INSTALL_LIBDIR}")
+set(mi_install_incdir "${CMAKE_INSTALL_INCLUDEDIR}")
 
 set(mi_libname "mimalloc")
 if(MI_SECURE)
@@ -964,8 +954,8 @@ endif()
 if(MI_BUILD_OBJECT)
   list(APPEND mi_build_targets "object")
 endif()
-if(MI_BUILD_TESTS)
-  list(APPEND mi_build_targets "tests")
+if(NOT mi_build_targets)
+  message(SEND_ERROR "At least one of MI_BUILD_SHARED, MI_BUILD_STATIC, or MI_BUILD_OBJECT must be enabled")
 endif()
 
 message(STATUS "")
@@ -992,7 +982,10 @@ message(STATUS "")
 # shared library
 if(MI_BUILD_SHARED)
   add_library(mimalloc SHARED ${mi_sources})
-  set_target_properties(mimalloc PROPERTIES VERSION ${mi_version} SOVERSION ${mi_version_major} OUTPUT_NAME ${mi_libname} )
+  if(WIN32)
+    target_sources(mimalloc PRIVATE mimalloc.rc)
+  endif()
+  set_target_properties(mimalloc PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR} OUTPUT_NAME ${mi_libname})
   target_compile_definitions(mimalloc PRIVATE ${mi_defines} MI_SHARED_LIB MI_SHARED_LIB_EXPORT)
   target_compile_options(mimalloc PRIVATE ${mi_cflags} ${mi_cflags_dynamic})
   target_link_libraries(mimalloc PRIVATE ${mi_libraries})
@@ -1000,14 +993,18 @@ if(MI_BUILD_SHARED)
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
       $<INSTALL_INTERFACE:${mi_install_incdir}>
   )
-  install(TARGETS mimalloc EXPORT mimalloc ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(EXPORT mimalloc DESTINATION ${mi_install_cmakedir})
+  if(MI_INSTALL)
+    install(TARGETS mimalloc
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+  endif()
 
   if(WIN32 AND NOT MINGW)
     # On windows, the import library name for the dll would clash with the static mimalloc.lib library
     # so we postfix the dll import library with `.dll.lib` (and also the .pdb debug file)
     set_property(TARGET mimalloc PROPERTY ARCHIVE_OUTPUT_NAME "${mi_libname}.dll" )
-    install(FILES "$<TARGET_FILE_DIR:mimalloc>/${mi_libname}.dll.lib" DESTINATION ${CMAKE_INSTALL_LIBDIR}/mimalloc-${mi_version})
     set_property(TARGET mimalloc PROPERTY PDB_NAME "${mi_libname}.dll")
     # don't try to install the pdb since it may not be generated depending on the configuration
     # install(FILES "$<TARGET_FILE_DIR:mimalloc>/${mi_libname}.dll.pdb" DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -1039,7 +1036,9 @@ if(MI_BUILD_SHARED)
     add_custom_command(TARGET mimalloc POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/bin/mimalloc-redirect${MIMALLOC_REDIRECT_SUFFIX}.dll" $<TARGET_FILE_DIR:mimalloc>
       COMMENT "Copy mimalloc-redirect${MIMALLOC_REDIRECT_SUFFIX}.dll to output directory")
-    install(FILES "$<TARGET_FILE_DIR:mimalloc>/mimalloc-redirect${MIMALLOC_REDIRECT_SUFFIX}.dll" DESTINATION ${CMAKE_INSTALL_BINDIR})
+    if(MI_INSTALL)
+      install(FILES "$<TARGET_FILE_DIR:mimalloc>/mimalloc-redirect${MIMALLOC_REDIRECT_SUFFIX}.dll" DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
   endif()
 endif()
 
@@ -1056,17 +1055,22 @@ if (MI_BUILD_STATIC)
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
       $<INSTALL_INTERFACE:${mi_install_incdir}>
   )
-  install(TARGETS mimalloc-static EXPORT mimalloc DESTINATION ${mi_install_objdir} LIBRARY)
-  install(EXPORT mimalloc DESTINATION ${mi_install_cmakedir})
+  if(MI_INSTALL)
+    install(TARGETS mimalloc-static ARCHIVE DESTINATION ${mi_install_objdir})
+  endif()
 endif()
 
 # install include files
-install(FILES include/mimalloc.h DESTINATION ${mi_install_incdir})
-install(FILES include/mimalloc-override.h DESTINATION ${mi_install_incdir})
-install(FILES include/mimalloc-new-delete.h DESTINATION ${mi_install_incdir})
-install(FILES include/mimalloc-stats.h DESTINATION ${mi_install_incdir})
-install(FILES cmake/mimalloc-config.cmake DESTINATION ${mi_install_cmakedir})
-install(FILES cmake/mimalloc-config-version.cmake DESTINATION ${mi_install_cmakedir})
+if(MI_INSTALL)
+  install(FILES
+      include/mimalloc.h
+      include/mimalloc-override.h
+      include/mimalloc-new-delete.h
+      include/mimalloc-stats.h
+      include/mimalloc-profile.h
+      DESTINATION ${mi_install_incdir}
+  )
+endif()
 
 
 # single object file for more predictable static overriding
@@ -1084,108 +1088,19 @@ if (MI_BUILD_OBJECT)
   # Copy the generated object file (`static.o`) to the output directory (as `mimalloc.o`)
   set(mimalloc-obj-static "$<TARGET_OBJECTS:mimalloc-obj>")
   set(mimalloc-obj-out "${CMAKE_CURRENT_BINARY_DIR}/${mi_libname}${CMAKE_C_OUTPUT_EXTENSION}")
-  add_custom_command(OUTPUT ${mimalloc-obj-out} DEPENDS mimalloc-obj mimalloc-static COMMAND "${CMAKE_COMMAND}" -E copy "${mimalloc-obj-static}" "${mimalloc-obj-out}")
+  add_custom_command(OUTPUT ${mimalloc-obj-out} DEPENDS mimalloc-obj COMMAND "${CMAKE_COMMAND}" -E copy "${mimalloc-obj-static}" "${mimalloc-obj-out}")
   add_custom_target(mimalloc-obj-target ALL DEPENDS ${mimalloc-obj-out})
 
 
-  # the following seems to lead to cmake warnings/errors on some systems, disable for now :-(
-  # install(TARGETS mimalloc-obj EXPORT mimalloc DESTINATION ${mi_install_objdir})
-
   # the FILES expression can also be: $<TARGET_OBJECTS:mimalloc-obj>
   # but that fails cmake versions less than 3.10 so we leave it as is for now
-  install(FILES ${mimalloc-obj-static}
-          DESTINATION ${mi_install_objdir}
-          RENAME ${mi_libname}${CMAKE_C_OUTPUT_EXTENSION} )
-endif()
-
-
-# pkg-config file support
-set(mi_pc_libraries "")
-foreach(item IN LISTS mi_libraries)
-  if(item MATCHES " *[-].*")
-    set(mi_pc_libraries "${mi_pc_libraries} ${item}")
-  else()
-    set(mi_pc_libraries "${mi_pc_libraries} -l${item}")
-  endif()
-endforeach()
-
-include("cmake/JoinPaths.cmake")
-join_paths(mi_pc_includedir "\${prefix}" "${CMAKE_INSTALL_INCLUDEDIR}")
-join_paths(mi_pc_libdir "\${prefix}" "${CMAKE_INSTALL_LIBDIR}")
-
-configure_file(mimalloc.pc.in mimalloc.pc @ONLY)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/mimalloc.pc"
-        DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig/")
-
-
-
-# -----------------------------------------------------------------------------
-# API surface testing
-# -----------------------------------------------------------------------------
-
-if (MI_BUILD_TESTS)
-  enable_testing()
-
-  # static link tests
-  foreach(TEST_NAME api api-fill stress-heaps stress-subprocs stress profile)
-    add_executable(mimalloc-test-${TEST_NAME} test/test-${TEST_NAME}.c)
-    target_compile_definitions(mimalloc-test-${TEST_NAME} PRIVATE ${mi_defines})
-    target_compile_options(mimalloc-test-${TEST_NAME} PRIVATE ${mi_cflags})
-    target_include_directories(mimalloc-test-${TEST_NAME} PRIVATE include)
-    if(MI_BUILD_STATIC AND NOT MI_DEBUG_TSAN)
-      target_link_libraries(mimalloc-test-${TEST_NAME} PRIVATE mimalloc-static ${mi_libraries})
-    elseif(MI_BUILD_SHARED)
-      target_link_libraries(mimalloc-test-${TEST_NAME} PRIVATE mimalloc ${mi_libraries})
-    else()
-      message(STATUS "cannot build TSAN tests without MI_BUILD_SHARED being enabled")
-    endif()
-    if(MI_GUARDED AND NOT (TEST_NAME STREQUAL "profile"))
-    add_test(NAME test-${TEST_NAME} COMMAND ${CMAKE_COMMAND} -E env MIMALLOC_GUARDED_SAMPLE_RATE=1024 $<TARGET_FILE:mimalloc-test-${TEST_NAME}>)
-    elseif(TEST_NAME STREQUAL "stress-heaps")
-    add_test(NAME test-${TEST_NAME} COMMAND ${CMAKE_COMMAND} -E env MIMALLOC_ARENA_EAGER_COMMIT=0 MIMALLOC_PAGE_COMMIT_ON_DEMAND=0 $<TARGET_FILE:mimalloc-test-${TEST_NAME}>)
-    elseif(NOT MI_PROFILE AND (TEST_NAME STREQUAL "profile"))
-    # don't add as a test
-    else()
-    add_test(NAME test-${TEST_NAME} COMMAND mimalloc-test-${TEST_NAME})
-    endif()
-  endforeach()
-
-  # static override test
-  if(MI_BUILD_OBJECT AND NOT (MI_CYGWIN OR (MI_TRACK STREQUAL "ASAN") OR MI_DEBUG_TSAN OR MI_DEBUG_UBSAN))
-    add_executable(mimalloc-test-stress-static test/test-stress.c)
-    target_compile_definitions(mimalloc-test-stress-static PRIVATE ${mi_defines} "USE_STD_MALLOC=1")
-    target_compile_options(mimalloc-test-stress-static PRIVATE ${mi_cflags})
-    target_include_directories(mimalloc-test-stress-static PRIVATE include)
-    target_link_libraries(mimalloc-test-stress-static PRIVATE mimalloc-obj  ${mi_libraries})  # override statically with an object file
-    add_test(NAME test-stress-static COMMAND ${CMAKE_COMMAND} -E env MIMALLOC_VERBOSE=1 MIMALLOC_SHOW_STATS=1 $<TARGET_FILE:mimalloc-test-stress-static>)
-  endif()
-
-  # dynamic override test
-  if(MI_BUILD_SHARED AND NOT (MI_CYGWIN OR (MI_TRACK STREQUAL "ASAN") OR MI_DEBUG_TSAN OR MI_DEBUG_UBSAN)) # AND NOT (APPLE AND MI_USE_CXX))
-    add_executable(mimalloc-test-stress-dynamic test/test-stress.c)
-    target_compile_definitions(mimalloc-test-stress-dynamic PRIVATE ${mi_defines} "USE_STD_MALLOC=1")
-    target_compile_options(mimalloc-test-stress-dynamic PRIVATE ${mi_cflags})
-    target_include_directories(mimalloc-test-stress-dynamic PRIVATE include)
-    if(WIN32)
-      target_compile_definitions(mimalloc-test-stress-dynamic PRIVATE "MI_LINK_VERSION=1")  # link mi_version
-      target_link_libraries(mimalloc-test-stress-dynamic PRIVATE mimalloc ${mi_libraries})  # link mi_version
-      if(MI_MINGW_UCRT64)
-        # mingw always links mimalloc after system libraries.
-        # post-process with `minject` to make sure mimalloc is the first dll in the load order.
-        add_custom_command(TARGET mimalloc-test-stress-dynamic POST_BUILD COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/bin/minject${MINJECT_SUFFIX} --postfix=${mi_libsuffix} -f -i $<TARGET_FILE:mimalloc-test-stress-dynamic>)
-      endif()
-      add_test(NAME test-stress-dynamic COMMAND ${CMAKE_COMMAND} -E env MIMALLOC_VERBOSE=1 $<TARGET_FILE:mimalloc-test-stress-dynamic>)
-    else()
-      target_link_libraries(mimalloc-test-stress-dynamic PRIVATE ${mi_libraries}) # pthreads, issue 1158
-      if(APPLE)
-        set(LD_PRELOAD "DYLD_INSERT_LIBRARIES")
-      else()
-        set(LD_PRELOAD "LD_PRELOAD")
-      endif()
-      add_test(NAME test-stress-dynamic COMMAND ${CMAKE_COMMAND} -E env MIMALLOC_VERBOSE=1 ${LD_PRELOAD}=$<TARGET_FILE:mimalloc> $<TARGET_FILE:mimalloc-test-stress-dynamic>)
-    endif()
+  if(MI_INSTALL)
+    install(FILES ${mimalloc-obj-static}
+            DESTINATION ${mi_install_objdir}
+            RENAME ${mi_libname}${CMAKE_C_OUTPUT_EXTENSION})
   endif()
 endif()
+
 
 # -----------------------------------------------------------------------------
 # Set override properties
